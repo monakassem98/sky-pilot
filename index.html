@@ -47,6 +47,9 @@ small{opacity:.75}
 .lic{border:5px double #b8860b;background:linear-gradient(#fff8dc,#ffe9a8);border-radius:14px;padding:14px;margin:10px 0;text-align:center;transform:rotate(-1.5deg)}
 .lic b{font-size:clamp(22px,5vw,32px);display:block;margin:4px 0}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid #cdd9e8;padding:4px;text-align:left;vertical-align:top}
+.opt{display:flex;gap:10px;align-items:center;border:3px solid #cdd9e8;border-radius:16px;padding:.5em .8em;margin:6px 0;background:#fff;cursor:pointer}
+.opt input{width:auto;margin:0}.opt.good{border-color:var(--grn);background:#e1fbe9}.opt.badopt{border-color:var(--red);background:#fff0ee}
+.q label{display:block;font-size:13px;font-weight:600}.q .opr{display:flex;gap:6px;align-items:center}.q .opr input[type=radio]{width:auto}
 @media (prefers-reduced-motion:reduce){.shake,.radar i{animation:none}}
 </style>
 </head>
@@ -71,6 +74,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px
 <div class="radar"><i></i><div>Tower calling SkyPilot! Engine overheating! Transmit scientific clearance code to stabilize!</div></div>
 <span class="badge" id="qt"></span>
 <h2 id="qp" style="margin:8px 0"></h2>
+<div id="qopts"></div>
 <textarea id="qa" placeholder="Type your full sentence explanation here…" aria-label="Your answer"></textarea>
 <div class="row"><button class="grn" id="qs">Transmit code 📡</button><button class="sec" id="qx" style="display:none">Close preview</button></div>
 <div id="qf"></div>
@@ -91,12 +95,26 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px
 const $=id=>document.getElementById(id);
 const LS={g(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}},s(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
 const SALT='skypilot-v1',CRUISE=12;
+const TYPES={complete:'Complete the sentence',give_reason:'Give reason for',what_happens:'What happens if',correct:'Correct the mistake',mcq:'Multiple choice'};
+const TCOL={complete:'#22b8f0',give_reason:'#7b5cff',what_happens:'#ff8a3c',correct:'#e0457b',mcq:'#2fbf71'};
+const HINT={complete:'Type the missing word or term…',give_reason:'Type your full sentence explanation here…',what_happens:'Type what would happen, and why…',correct:'Type the corrected word or sentence…'};
+const MINW={complete:1,correct:1,give_reason:3,what_happens:3};
+const OLD={'Give reason for':'give_reason','What happens if':'what_happens'};
 const DEFAULT_Q=[
-{type:'Give reason for',prompt:'Wood floats on the surface of water.',modelAnswer:'Wood floats because its density is less than the density of water.',requiredKeywords:'densit, less|lower|smaller, water'},
-{type:'What happens if',prompt:'A green plant is kept in complete darkness for many days.',modelAnswer:'The plant cannot make food by photosynthesis without light, so its leaves turn yellow and the plant becomes weak.',requiredKeywords:'photosynth|food, light|sunlight, yellow|weak|die|pale'},
-{type:'Give reason for',prompt:'We see lightning before we hear thunder.',modelAnswer:'Light travels much faster than sound, so the light reaches us first.',requiredKeywords:'light, faster|quicker|greater, sound'},
-{type:'What happens if',prompt:'An iron nail is left outside in damp air for a long time.',modelAnswer:'It rusts, because iron reacts with oxygen and water to form iron oxide.',requiredKeywords:'rust, oxygen|air, water|moisture|damp'}];
-let Q=LS.g('sp_q',null)||DEFAULT_Q.slice();
+{type:'give_reason',prompt:'Wood floats on the surface of water.',modelAnswer:'Wood floats because its density is less than the density of water.',requiredKeywords:'densit, less|lower|smaller, water'},
+{type:'complete',prompt:'Plants make their food by a process called ________.',modelAnswer:'photosynthesis',requiredKeywords:'photosynth'},
+{type:'what_happens',prompt:'A green plant is kept in complete darkness for many days.',modelAnswer:'The plant cannot make food by photosynthesis without light, so its leaves turn yellow and the plant becomes weak.',requiredKeywords:'photosynth|food, light|sunlight, yellow|weak|die|pale'},
+{type:'mcq',prompt:'Which gas do plants take in for photosynthesis?',options:['Oxygen','Carbon dioxide','Nitrogen','Hydrogen'],correctIndex:1,modelAnswer:'Plants take in carbon dioxide and use it to make food.'},
+{type:'give_reason',prompt:'We see lightning before we hear thunder.',modelAnswer:'Light travels much faster than sound, so the light reaches us first.',requiredKeywords:'light, faster|quicker|greater, sound'},
+{type:'correct',prompt:'Correct the mistake: "The Sun revolves around the Earth."',modelAnswer:'The Earth revolves around the Sun.',requiredKeywords:'earth revolv|earth orbit|earth goes around|earth moves around|earth travels around, around the sun'},
+{type:'what_happens',prompt:'An iron nail is left outside in damp air for a long time.',modelAnswer:'It rusts, because iron reacts with oxygen and water to form iron oxide.',requiredKeywords:'rust, oxygen|air, water|moisture|damp'}];
+function migrate(a){return(Array.isArray(a)?a:[]).map(q=>({type:TYPES[q.type]?q.type:(OLD[q.type]||'give_reason'),prompt:String(q.prompt||''),modelAnswer:String(q.modelAnswer||''),requiredKeywords:String(q.requiredKeywords||''),options:(Array.isArray(q.options)?q.options.map(String):[]).concat(['','','','']).slice(0,4),correctIndex:+q.correctIndex||0}))}
+function prep(q){
+  if(!q||!String(q.prompt).trim())return null;
+  if(q.type==='mcq'){const ix=[];q.options.forEach((o,i)=>{if(String(o).trim())ix.push(i)});const c=ix.indexOf(q.correctIndex);
+    return ix.length>=2&&c>=0?{...q,options:ix.map(i=>String(q.options[i]).trim()),correctIndex:c}:null}
+  return q.requiredKeywords.replace(/[,|]/g,'').trim()&&q.modelAnswer.trim()?q:null}
+let Q=migrate(LS.g('sp_q',null)||DEFAULT_Q);
 const saveQ=()=>LS.s('sp_q',Q);
 
 /* ---------- helpers ---------- */
@@ -105,15 +123,38 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const norm=s=>' '+String(s).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g,' ').trim()+' ';
 const rx=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 
+/* ---------- student links ---------- */
+const sign=(n,c,q,u)=>hash([n,c,q||'',u||'',SALT].join('|'));
+const b64e=o=>{let s='';new TextEncoder().encode(JSON.stringify(o)).forEach(c=>s+=String.fromCharCode(c));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')};
+const b64d=t=>{t=t.replace(/-/g,'+').replace(/_/g,'/');while(t.length%4)t+='=';return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(t),c=>c.charCodeAt(0))))};
+const pack=qs=>b64e(qs.map(prep).filter(Boolean).map(q=>[q.type,q.prompt,q.modelAnswer,q.requiredKeywords,q.options,q.correctIndex]));
+const unpack=t=>migrate(b64d(t).map(a=>({type:a[0],prompt:a[1],modelAnswer:a[2],requiredKeywords:a[3],options:a[4],correctIndex:a[5]})));
+function makeLink(base,name,qs,url){const c=hash(name).slice(0,4),q=pack(qs),u=url||'';return base+'?student='+encodeURIComponent(name)+'&code='+c+'&sig='+sign(name,c,q,u)+'&q='+q+(u?'&u='+encodeURIComponent(u):'')}
+function parseLink(search){const p=new URLSearchParams(search);if(!['student','code','sig','q','u'].some(k=>p.has(k)))return null;
+  const n=p.get('student')||'',c=p.get('code')||'',q=p.get('q')||'',u=p.get('u')||'',ok=!!n&&p.get('sig')===sign(n,c,q,u);let qs=null;
+  if(ok&&q){try{qs=unpack(q).filter(prep)}catch(e){}}
+  return{name:n,ok,questions:qs&&qs.length?qs:null,url:ok?u:''}}
+const portalAllowed=search=>!parseLink(search);
+const isTyping=el=>!!el&&(/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)||!!el.isContentEditable);
+const overlayOpen=()=>['gate','qov','eov','por'].some(i=>{const e=$(i);return e&&e.classList.contains('on')});
+
 /* ---------- keyword engine ---------- */
 function evaluate(q,text){
-  const n=norm(text),groups=q.requiredKeywords.split(',').map(g=>g.split('|').map(a=>a.trim().toLowerCase()).filter(Boolean)).filter(g=>g.length);
+  const n=norm(text),groups=String(q.requiredKeywords).split(',').map(g=>g.split('|').map(a=>norm(a).trim()).filter(Boolean)).filter(g=>g.length);
   const hits=[],miss=[];
   groups.forEach(g=>{const f=g.find(a=>n.includes(a));f?hits.push(f):miss.push(g)});
   let html=esc(text);
-  if(hits.length){html=html.replace(new RegExp('('+hits.map(rx).join('|')+')[a-z]*','gi'),m=>'<mark>'+m+'</mark>')}
-  return{pass:groups.length>0&&!miss.length&&text.trim().split(/\s+/).length>=3,miss,html,short:text.trim().split(/\s+/).length<3};
+  if(hits.length)html=html.replace(new RegExp('('+hits.map(rx).join('|')+')[a-z]*','gi'),m=>'<mark>'+m+'</mark>');
+  const short=n.trim().split(' ').filter(Boolean).length<(MINW[q.type]||3);
+  return{pass:groups.length>0&&!miss.length&&!short,miss,html,short};
 }
+function grade(q,ans){
+  if(q.type==='mcq'){const o=q.options[+ans];return{pass:+ans===q.correctIndex,miss:[],short:false,html:esc(o||''),text:o==null?'':String.fromCharCode(65+ +ans)+') '+o}}
+  return evaluate(q,ans);
+}
+function applyResult(s,pass){if(pass){const r=s.wrong>0;s.pts+=100;s.wrong=0;return r}s.wrong++;return false}
+const route=(wrong,pass,qi,len)=>wrong>=3?'crash':qi>=len?(pass?'landing':'repair'):pass?'boost':'next';
+const buildRecord=(student,attempt,s,ok)=>({student,attempt,score:s.pts+' pts, '+s.stars+' stars',timeSec:Math.round(s.time),details:s.res.map(d=>({type:d.type,prompt:d.prompt,answer:d.answer,model:d.model,result:d.result})),date:new Date().toISOString(),completed:ok});
 
 /* ---------- audio ---------- */
 let AC;const ac=()=>{try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume()}catch(e){}return AC};
@@ -134,13 +175,16 @@ function resize(){DPR=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight
 addEventListener('resize',resize);resize();
 
 /* ---------- state ---------- */
-let S=null,keys={},tgt=null,last=0,student='';
+let S=null,keys={},tgt=null,last=0,student='',QP=[];
+const LINK=parseLink(location.search);
+const syncUrl=()=>LINK?(LINK.ok?LINK.url:''):LS.g('sp_url','');
 const rnd=(a,b)=>a+Math.random()*(b-a);
 const clouds=Array.from({length:9},()=>({x:rnd(0,1),y:rnd(.05,.85),s:rnd(.6,1.6),v:rnd(8,24)}));
+function freshState(){return{ph:'cruise',t:0,qi:0,n:0,wrong:0,stars:0,pts:0,time:0,px:W*.25,py:H*.5,tilt:0,objs:[],parts:[],boost:0,flash:0,flashC:'#2fbf71',spawn:0,ang:0,res:[],island:0,wt:0,prop:0,msg:'',msgT:0,over:false,fw:0}}
 function newGame(){
-  S={ph:'cruise',t:0,qi:0,wrong:0,stars:0,pts:0,time:0,px:W*.25,py:H*.5,tilt:0,objs:[],parts:[],boost:0,flash:0,flashC:'#2fbf71',spawn:0,
-     ang:0,res:[],island:0,wt:0,prop:0,msg:'',msgT:0,over:false,fw:0};
-  tgt=null;$('hud').style.display='flex';$('pad').style.display=('ontouchstart' in window||navigator.maxTouchPoints>0)?'grid':'none';
+  QP=Q.map(prep).filter(Boolean);S=freshState();S.n=QP.length;keys={};tgt=null;
+  $('qa').value='';$('qa').disabled=false;$('qf').innerHTML='';$('qopts').innerHTML='';$('qov').classList.remove('on');$('eov').classList.remove('on');
+  $('hud').style.display='flex';$('pad').style.display=('ontouchstart' in window||navigator.maxTouchPoints>0)?'grid':'none';
 }
 function say(m,t=2){S.msg=m;S.msgT=t}
 function burst(x,y,n,cols,sp=240){for(let i=0;i<n;i++){const a=rnd(0,6.28),v=rnd(40,sp);S.parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,l:rnd(.6,1.4),m:1.4,r:rnd(3,7),c:cols[i%cols.length],g:200,k:'d'})}}
@@ -149,7 +193,7 @@ function smoke(x,y,c='#555'){S.parts.push({x,y,vx:rnd(-50,-20),vy:rnd(-30,10),l:
 
 /* ---------- game logic ---------- */
 function update(dt){
-  S.time+=dt;S.prop+=dt*40;
+  if(!S.over)S.time+=dt;S.prop+=dt*40;
   const sp=S.boost>0?2.6:1,wrongSlow=S.wrong>=2?.8:1;
   clouds.forEach(c=>{c.x-=c.v*sp*dt/W;if(c.x<-.3)c.x=1.2});
   const playing=['cruise','ask','fb','boost'].includes(S.ph);
@@ -157,6 +201,7 @@ function update(dt){
     let dx=0,dy=0;const sp2=300*wrongSlow;
     if(keys.ArrowLeft||keys.a||keys.left)dx-=1;if(keys.ArrowRight||keys.d||keys.right)dx+=1;
     if(keys.ArrowUp||keys.w||keys.up)dy-=1;if(keys.ArrowDown||keys.s||keys.down)dy+=1;
+    if(!(S.ph==='cruise'||S.ph==='boost')){dx=0;dy=0;tgt=null}
     if(dx||dy){S.px+=dx*sp2*dt;S.py+=dy*sp2*dt;tgt=null}
     else if(tgt){S.px+=(tgt.x-S.px)*Math.min(1,dt*7);S.py+=(tgt.y-S.py)*Math.min(1,dt*7)}
     if(S.wrong>=2)S.py+=28*dt;
@@ -195,44 +240,49 @@ function update(dt){
   S.parts.forEach(p=>{p.l-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=p.g*dt;if(p.k==='r')p.vx+=Math.sin(p.y/30)*20*dt});
   S.parts=S.parts.filter(p=>p.l>0&&p.y<H+20);
   if(S.flash>0)S.flash-=dt;if(S.msgT>0)S.msgT-=dt;
-  $('hQ').textContent='🎯 '+Math.min(S.qi+1,Q.length)+'/'+Q.length;
+  $('hQ').textContent=S.qi<S.n?'🎯 '+(S.qi+1)+'/'+S.n:S.qi<QP.length?'🔧 Repair':'🎯 '+S.n+'/'+S.n;
   $('hS').textContent='⭐ '+S.stars+'  ·  '+S.pts+' pts';
   $('hH').textContent='❤️'.repeat(Math.max(0,3-S.wrong))+'🖤'.repeat(Math.min(3,S.wrong));
 }
 
-function ask(){
-  S.ph='ask';S.objs=S.objs.filter(o=>o.x>0);sfx.siren();S.flash=.6;S.flashC='#ff5a5f';
-  const q=Q[S.qi];$('qt').textContent=q.type;$('qt').style.background=q.type==='Give reason for'?'#7b5cff':'#ff8a3c';
-  $('qp').textContent=q.prompt;$('qa').value='';$('qa').disabled=false;$('qf').innerHTML='';
-  $('qs').style.display='';$('qs').textContent='Transmit code 📡';$('qs').dataset.mode='send';$('qx').style.display='none';
-  $('qbox').classList.remove('shake');$('qov').classList.add('on');setTimeout(()=>$('qa').focus(),300);
+function showQ(q,pv){
+  const m=q.type==='mcq';$('qt').textContent=TYPES[q.type];$('qt').style.background=TCOL[q.type];$('qp').textContent=q.prompt;
+  $('qa').style.display=m?'none':'';$('qa').value='';$('qa').disabled=!!pv;$('qa').placeholder=HINT[q.type]||'';
+  $('qopts').innerHTML=m?q.options.map((o,i)=>`<label class="opt"><input type="radio" name="mc" value="${i}"${pv&&i===q.correctIndex?' checked':''}${pv?' disabled':''}><span><b>${String.fromCharCode(65+i)}</b> ${esc(o)}</span></label>`).join(''):'';
+  $('qf').innerHTML='';$('qs').style.display=pv?'none':'';$('qs').textContent='Transmit code 📡';$('qs').dataset.mode='send';$('qx').style.display=pv?'':'none';
+  $('qbox').classList.remove('shake');$('qov').classList.add('on');if(!pv&&!m)setTimeout(()=>$('qa').focus(),300);
 }
+function ask(){S.ph='ask';keys={};tgt=null;S.objs=S.objs.filter(o=>o.x>0);sfx.siren();S.flash=.6;S.flashC='#ff5a5f';showQ(QP[S.qi])}
 function submitQ(){
   if(!S||S.ph!=='ask')return;
-  const q=Q[S.qi],txt=$('qa').value,r=evaluate(q,txt);
-  S.res.push({prompt:q.prompt,answer:txt,model:q.modelAnswer,result:r.pass?'pass':'fail'});
-  $('qa').disabled=true;S.ph='fb';
-  if(r.pass){
-    S.pts+=100;S.wrong>0&&say('Plane fully repaired! 🔧',2.5);S.wrong=0;sfx.win();S.flash=.5;S.flashC='#2fbf71';burst(S.px,S.py,40,['#ffc93c','#fff','#2fbf71'],320);
-    $('qf').innerHTML='<div class="fb ok"><b>System Repaired &amp; Clearance Granted! ⭐</b><br>Your answer: '+r.html+'<br><small>Model answer: '+esc(q.modelAnswer)+'</small></div>';
-  }else{
-    S.wrong++;sfx.wrong();$('qbox').classList.add('shake');S.flash=.5;S.flashC='#ff5a5f';
+  const q=QP[S.qi],m=q.type==='mcq';let ans;
+  if(m){const c=document.querySelector('#qopts input:checked');if(!c){$('qf').innerHTML='<div class="fb bad">Pick an answer first.</div>';return}ans=+c.value}
+  else{ans=$('qa').value;if(!ans.trim()){$('qa').focus();return}}
+  const r=grade(q,ans);
+  if(r.short){$('qf').innerHTML='<div class="fb bad">Write a little more: at least '+MINW[q.type]+' word'+(MINW[q.type]>1?'s':'')+'. No damage for this one!</div>';return}
+  S.res.push({type:q.type,prompt:q.prompt,answer:m?r.text:ans,model:m?q.options[q.correctIndex]:q.modelAnswer,result:r.pass?'pass':'fail'});
+  $('qa').disabled=true;document.querySelectorAll('#qopts input').forEach(i=>i.disabled=true);
+  if(m)document.querySelectorAll('#qopts .opt').forEach((l,i)=>{if(i===q.correctIndex)l.classList.add('good');else if(i===ans)l.classList.add('badopt')});
+  S.ph='fb';const fixed=applyResult(S,r.pass),you=m?esc(r.text):r.html,mod=esc(m?q.options[q.correctIndex]+(q.modelAnswer?' — '+q.modelAnswer:''):q.modelAnswer);
+  if(r.pass){sfx.win();S.flash=.5;S.flashC='#2fbf71';burst(S.px,S.py,40,['#ffc93c','#fff','#2fbf71'],320);if(fixed)say('Plane fully repaired! 🔧',2.5);
+    $('qf').innerHTML='<div class="fb ok"><b>System Repaired &amp; Clearance Granted! ⭐</b><br>Your answer: '+you+'<br><small>Model answer: '+mod+'</small></div>'}
+  else{sfx.wrong();$('qbox').classList.add('shake');S.flash=.5;S.flashC='#ff5a5f';
     const dmg=S.wrong===1?'⚠️ Wing Damaged! Warning!':S.wrong===2?'🔥 Critical Damage! Engine failed!':'💥 Mission Failed - Try Again!';
-    const clue=r.short?'Write a full sentence (at least 3 words).':r.miss.length?'Missing clue: <b>'+esc(r.miss[0].join(' / '))+'</b>':'';
-    $('qf').innerHTML='<div class="fb bad"><b>'+dmg+'</b><br>🕵️ '+clue+'<br>Your answer: '+r.html+'<br><b>Model answer:</b> '+esc(q.modelAnswer)+'</div>';
-  }
+    const clue=m?'The right choice was <b>'+esc(String.fromCharCode(65+q.correctIndex)+') '+q.options[q.correctIndex])+'</b>':'Missing clue: <b>'+esc(r.miss[0]?r.miss[0].join(' / '):'')+'</b>';
+    $('qf').innerHTML='<div class="fb bad"><b>'+dmg+'</b><br>🕵️ '+clue+'<br>Your answer: '+you+'<br><b>Model answer:</b> '+mod+'</div>'}
   $('qs').textContent='Continue ✈️';$('qs').dataset.mode='go';
 }
 function afterQ(){
+  if(!S||S.ph!=='fb')return;
   $('qov').classList.remove('on');
-  const pass=S.res[S.res.length-1].result==='pass';
-  S.qi++;
-  if(S.wrong>=3){crash();return}
-  if(pass){S.ph='boost';S.boost=2.5;say('TURBO BOOST! 🚀',2)}
-  else{S.ph='boost';S.boost=.01}
+  const pass=S.res[S.res.length-1].result==='pass';S.qi++;
+  const r=route(S.wrong,pass,S.qi,QP.length);
+  if(r==='crash'){crash();return}
+  if(r==='repair'){QP.push(QP[S.qi-1]);say('Repair checkpoint: try it again! 🔧',2.5)}
+  S.ph='boost';S.boost=pass?2.5:.01;if(pass)say('TURBO BOOST! 🚀',2);
 }
 function afterBoost(){
-  if(S.qi>=Q.length){S.ph='landing';S.wt=0;S.objs=[];say('Secret Scientist Island ahead!',3);return}
+  if(S.qi>=QP.length){S.ph='landing';S.wt=0;S.objs=[];say('Secret Scientist Island ahead!',3);return}
   S.ph='cruise';S.t=0;S.spawn=.3;
 }
 function crash(){S.ph='crash';S.wt=0;S.ang=0;S.objs=[];sfx.wrong();say('Mission Failed — parachute landing!',3)}
@@ -240,10 +290,9 @@ function crash(){S.ph='crash';S.wt=0;S.ang=0;S.objs=[];sfx.wrong();say('Mission 
 /* ---------- end screens & logging ---------- */
 function finish(ok){
   S.over=true;
-  const attempts=LS.g('sp_att',{});attempts[student]=(attempts[student]||0)+1;LS.s('sp_att',attempts);
-  const rec={student,attempt:attempts[student],score:S.pts+' pts, '+S.stars+' stars',timeSec:Math.round(S.time),details:S.res,date:new Date().toISOString(),completed:ok};
-  const log=LS.g('sp_log',[]);log.push(rec);LS.s('sp_log',log);
-  const url=LS.g('sp_url','');
+  const att=LS.g('sp_att',{});att[student]=(att[student]||0)+1;LS.s('sp_att',att);
+  const rec=buildRecord(student,att[student],S,ok),log=LS.g('sp_log',[]);log.push(rec);LS.s('sp_log',log);
+  const url=syncUrl();
   if(url){try{fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(rec)}).catch(()=>{})}catch(e){}}
 }
 function win(){
@@ -315,24 +364,23 @@ function plane(x,y,rot,wing,eng,prop){
 /* ---------- loop & input ---------- */
 function loop(t){const dt=Math.min(.05,(t-last)/1000||0);last=t;if(S&&!S.over)update(dt);else if(S){S.prop+=dt*40;S.parts.forEach(p=>{p.l-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=p.g*dt});if(S.ph==='win')update(dt)}draw();requestAnimationFrame(loop)}
 requestAnimationFrame(loop);
-addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;const k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=true;if(k.startsWith('Arrow'))e.preventDefault()});
+addEventListener('keydown',e=>{if(isTyping(e.target)||overlayOpen())return;const k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=true;if(k.startsWith('Arrow'))e.preventDefault()});
+addEventListener('blur',()=>{keys={}});
 addEventListener('keyup',e=>{const k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=false});
 cv.addEventListener('pointerdown',e=>{ac();tgt={x:e.clientX-30,y:e.clientY}});
 cv.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')tgt={x:e.clientX-30,y:e.clientY}});
 document.querySelectorAll('#pad button').forEach(b=>{const k=b.dataset.k,on=e=>{e.preventDefault();keys[k]=true},off=()=>keys[k]=false;b.addEventListener('pointerdown',on);['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,off))});
 
 /* ---------- gate ---------- */
-(function(){
-  const p=new URLSearchParams(location.search),n=p.get('student');
-  if(n){const ok=p.get('sig')===hash(n+'|'+p.get('code')+'|'+SALT);
-    if(ok){$('nm').value=n;$('nm').readOnly=true;$('lockNote').textContent='Your teacher\'s link is verified ✔'}
-    else $('lockNote').textContent='This link could not be verified — type your name below.'}
-})();
+if(LINK){ /* student link: the Teacher Portal is removed entirely */
+  $('tp').remove();$('por').remove();
+  if(LINK.ok){$('nm').value=LINK.name;$('nm').readOnly=true;if(LINK.questions)Q=LINK.questions;$('lockNote').textContent='Your teacher\'s link is verified ✔'}
+  else $('lockNote').textContent='This link could not be verified — type your name below.';
+}
 $('go').onclick=()=>{const n=$('nm').value.trim();if(!n){$('nm').focus();$('nm').placeholder='Please type your name first';return}
-  if(!Q.length){alert('No questions yet. Ask your teacher to add some in the Teacher Portal.');return}
+  if(!Q.some(prep)){alert('No playable questions yet. Please tell your teacher.');return}
   student=n;ac();$('gate').classList.remove('on');newGame()};
-$('qs').onclick=()=>{if($('qs').dataset.mode==='go'){afterQ();return}
-  if(!$('qa').value.trim()){$('qa').focus();return}submitQ()};
+$('qs').onclick=()=>{if($('qs').dataset.mode==='go'){afterQ();return}submitQ()};
 $('qx').onclick=()=>{$('qov').classList.remove('on')};
 $('qa').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))$('qs').click()});
 
@@ -340,30 +388,34 @@ $('qa').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey
 const SCRIPT=`function doPost(e){
   var d=JSON.parse(e.postData.contents);
   var sh=SpreadsheetApp.getActiveSheet();
-  if(sh.getLastRow()==0)sh.appendRow(['Date','Student','Attempt','Score','Time (s)','Details']);
-  sh.appendRow([d.date,d.student,d.attempt,d.score,d.timeSec,JSON.stringify(d.details)]);
+  if(sh.getLastRow()==0)sh.appendRow(['Date','Student','Attempt','Score','Time (s)','Completed','Answers']);
+  var a=(d.details||[]).map(function(x,i){return (i+1)+'. ['+x.type+'] '+x.prompt+' | Answer: '+x.answer+' | Model: '+x.model+' | '+x.result;}).join('\\n');
+  sh.appendRow([d.date,d.student,d.attempt,d.score,d.timeSec,d.completed,a]);
   return ContentService.createTextOutput('ok');
 }
 function doGet(){return ContentService.createTextOutput('SkyPilot sync ready');}`;
 let tab='q';
-const TABS={q:'Questions',s:'Sync',l:'Student Links',r:'Review'};
+const TABS={q:'Questions',s:'Sync',l:'Student Links',r:'Review',t:'Self-test'};
 function portal(){
   $('tabs').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;portal()});
   const B=$('pbody');
   if(tab==='q'){
-    B.innerHTML='<p><small>Keywords: separate required ideas with commas, and synonyms with | (e.g. <code>densit, less|lower, water</code>). Partial words work as stems.</small></p>'+
-    Q.map((q,i)=>`<div class="q" data-i="${i}"><select data-f="type"><option${q.type==='Give reason for'?' selected':''}>Give reason for</option><option${q.type==='What happens if'?' selected':''}>What happens if</option></select>
-    <input data-f="prompt" value="${esc(q.prompt)}" placeholder="Prompt" aria-label="Prompt"><textarea data-f="modelAnswer" placeholder="Model answer" aria-label="Model answer">${esc(q.modelAnswer)}</textarea>
-    <input data-f="requiredKeywords" value="${esc(q.requiredKeywords)}" placeholder="Keywords" aria-label="Keywords">
-    <div class="row" style="margin:6px 0 0"><button class="sec" data-a="pv">Preview</button><button class="sec" data-a="del">Delete</button></div></div>`).join('')+
+    B.innerHTML='<p><small>Written questions: separate required ideas with commas and synonyms with | (e.g. <code>densit, less|lower, water</code>). Use a phrase such as <code>earth revolv</code> when word order matters. '+Q.filter(prep).length+' of '+Q.length+' questions are ready to play.</small></p>'+
+    Q.map((q,i)=>{const m=q.type==='mcq';return `<div class="q" data-i="${i}"><label>Question type<select data-f="type">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}"${q.type===k?' selected':''}>${v}</option>`).join('')}</select></label>
+    <label>Prompt<input data-f="prompt" value="${esc(q.prompt)}" placeholder="${q.type==='complete'?'Plants make food by ________.':q.type==='correct'?'Correct the mistake: …':'Prompt'}"></label>`+
+    (m?`<label>Options (tick the correct one)</label>${q.options.map((o,j)=>`<div class="opr"><input type="radio" name="c${i}" data-f="correct" value="${j}"${q.correctIndex===j?' checked':''} aria-label="Correct option ${j+1}"><input data-o="${j}" value="${esc(o)}" placeholder="Option ${String.fromCharCode(65+j)}"></div>`).join('')}<label>Explanation (optional)<textarea data-f="modelAnswer">${esc(q.modelAnswer)}</textarea></label>`
+    :`<label>Model answer<textarea data-f="modelAnswer">${esc(q.modelAnswer)}</textarea></label><label>Required keywords<input data-f="requiredKeywords" value="${esc(q.requiredKeywords)}" placeholder="densit, less|lower, water"></label>`)+
+    `<span class="warn" style="color:#c0392b;font-size:13px"${prep(q)?' hidden':''}>⚠ Incomplete: this question is skipped in the game.</span><div class="row" style="margin:6px 0 0"><button class="sec" data-a="pv">Preview</button><button class="sec" data-a="del">Delete</button></div></div>`}).join('')+
     '<div class="row"><button class="grn" id="addq">+ Add question</button><button class="sec" id="rst">Restore sample questions</button></div>';
-    B.querySelectorAll('.q [data-f]').forEach(el=>el.onchange=()=>{Q[el.closest('.q').dataset.i][el.dataset.f]=el.value;saveQ()});
+    B.querySelectorAll('.q [data-f],.q [data-o]').forEach(el=>el.onchange=()=>{
+      const d=el.closest('.q'),q=Q[+d.dataset.i],f=el.dataset.f;
+      if(el.dataset.o!==undefined)q.options[+el.dataset.o]=el.value;else if(f==='correct')q.correctIndex=+el.value;else q[f]=el.value;
+      saveQ();if(f==='type')portal();else d.querySelector('.warn').hidden=!!prep(q)});
     B.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{const i=+b.closest('.q').dataset.i;
-      if(b.dataset.a==='del'){Q.splice(i,1);saveQ();portal()}
-      else{preview(Q[i])}});
-    $('addq').onclick=()=>{Q.push({type:'Give reason for',prompt:'',modelAnswer:'',requiredKeywords:''});saveQ();portal()};
-    $('rst').onclick=()=>{if(confirm('Replace all questions with the samples?')){Q=DEFAULT_Q.slice();saveQ();portal()}};
+      if(b.dataset.a==='del'){Q.splice(i,1);saveQ();portal()}else preview(Q[i])});
+    $('addq').onclick=()=>{Q.push(migrate([{}])[0]);saveQ();portal()};
+    $('rst').onclick=()=>{if(confirm('Replace all questions with the samples?')){Q=migrate(DEFAULT_Q);saveQ();portal()}};
   }else if(tab==='s'){
     B.innerHTML='<p><b>Google Apps Script Web App URL</b></p><input id="url" placeholder="https://script.google.com/macros/s/…/exec" value="'+esc(LS.g('sp_url',''))+'">'+
     '<div class="row"><button class="grn" id="su">Save URL</button><button class="sec" id="st">Send test row</button></div><p id="sm"></p>'+
@@ -371,16 +423,21 @@ function portal(){
     $('code').textContent=SCRIPT;
     $('su').onclick=()=>{LS.s('sp_url',$('url').value.trim());$('sm').textContent='Saved ✔'};
     $('st').onclick=()=>{const u=$('url').value.trim();if(!u){$('sm').textContent='Paste the URL first.';return}LS.s('sp_url',u);
-      fetch(u,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({student:'TEST',attempt:0,score:'0 pts',timeSec:0,details:[{prompt:'Test',answer:'Test row',model:'-',result:'pass'}],date:new Date().toISOString()})})
+      fetch(u,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({student:'TEST',attempt:0,score:'0 pts',timeSec:0,details:[{type:'test',prompt:'Test',answer:'Test row',model:'-',result:'pass'}],date:new Date().toISOString()})})
       .then(()=>$('sm').textContent='Test row sent — check your sheet.').catch(()=>$('sm').textContent='Could not reach the URL. Check it and try again.')};
     $('cp').onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(SCRIPT).then(()=>$('cp').textContent='Copied ✔');
   }else if(tab==='l'){
-    B.innerHTML='<p>One student name per line:</p><textarea id="names" placeholder="Aisha&#10;Omar&#10;Lina">'+esc(LS.g('sp_names',''))+'</textarea><div class="row"><button class="grn" id="mk">Make links</button></div><div id="lk"></div>';
-    $('mk').onclick=()=>{const list=$('names').value.split('\n').map(s=>s.trim()).filter(Boolean);LS.s('sp_names',$('names').value);
+    const n=Q.filter(prep).length,url=LS.g('sp_url','');
+    B.innerHTML='<p>One student name per line. Each link carries your <b>'+n+' playable questions</b>'+(url?' and your sync URL':' (no sync URL saved yet)')+', so students on other devices get the same quiz. Make the links again after you edit questions.</p>'+(location.protocol==='file:'?'<p class="fb bad">Host this file online first (for example GitHub Pages). Links made from a local file path will not open on student devices.</p>':'')+'<textarea id="names" placeholder="Aisha&#10;Omar&#10;Lina">'+esc(LS.g('sp_names',''))+'</textarea><div class="row"><button class="grn" id="mk">Make links</button></div><div id="lk"></div>';
+    $('mk').onclick=()=>{const list=$('names').value.split('\n').map(x=>x.trim()).filter(Boolean);LS.s('sp_names',$('names').value);
       const base=location.href.split('?')[0].split('#')[0];
-      $('lk').innerHTML=list.map(n=>{const c=hash(n).slice(0,4),u=base+'?student='+encodeURIComponent(n)+'&code='+c+'&sig='+hash(n+'|'+c+'|'+SALT);
-        return `<div class="q"><b>${esc(n)}</b><input readonly value="${esc(u)}" aria-label="Link for ${esc(n)}"><button class="sec" data-u="${esc(u)}">Copy link</button></div>`}).join('');
+      $('lk').innerHTML=list.map(nm=>{const u=makeLink(base,nm,Q,url);
+        return `<div class="q"><b>${esc(nm)}</b><input readonly value="${esc(u)}" aria-label="Link for ${esc(nm)}"><button class="sec" data-u="${esc(u)}">Copy link</button></div>`}).join('');
       $('lk').querySelectorAll('button').forEach(b=>b.onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(b.dataset.u).then(()=>b.textContent='Copied ✔'))};
+  }else if(tab==='t'){
+    const T=runSelfTests();
+    B.innerHTML='<p><b>'+T.filter(x=>x[1]).length+' / '+T.length+' checks passed</b></p>'+T.map(x=>`<div class="fb ${x[1]?'ok':'bad'}">${x[1]?'✅':'❌'} ${esc(x[0])}${x[2]?'<br><small>'+esc(x[2])+'</small>':''}</div>`).join('');
+
   }else{
     const log=LS.g('sp_log',[]);
     B.innerHTML='<div class="row" style="margin:0 0 8px"><button class="grn" id="csv">Download CSV</button><button class="sec" id="clr">Clear local log</button></div>'+
@@ -392,12 +449,34 @@ function portal(){
   }
 }
 function preview(q){
-  $('qt').textContent=q.type;$('qt').style.background='#7b5cff';$('qp').textContent=q.prompt||'(empty prompt)';$('qa').value='';$('qa').disabled=true;
-  $('qf').innerHTML='<div class="fb ok"><small>Model answer:</small> '+esc(q.modelAnswer)+'<br><small>Keywords: '+esc(q.requiredKeywords)+'</small></div>';
-  $('qs').style.display='none';$('qx').style.display='';$('qov').classList.add('on');
+  const p=prep(q);if(!p){alert('This question is incomplete. Fill in the prompt and its answer details first.');return}
+  showQ(p,true);
+  $('qf').innerHTML='<div class="fb ok"><small>'+(p.type==='mcq'?'Correct option is ticked. Explanation: ':'Model answer: ')+'</small>'+esc(p.modelAnswer)+(p.type==='mcq'?'':'<br><small>Keywords: '+esc(p.requiredKeywords)+'</small>')+'</div>';
 }
-$('tp').onclick=()=>{$('por').classList.add('on');portal()};
-$('pc').onclick=()=>$('por').classList.remove('on');
+function runSelfTests(){
+  const T=[],t=(n,f)=>{try{const r=f();T.push([n,r===true,r===true?'':'returned '+r])}catch(e){T.push([n,false,e.message])}};
+  const M=migrate(DEFAULT_Q),written=M.filter(q=>q.type!=='mcq'),mq=M.find(q=>q.type==='mcq'),gr=M.find(q=>q.type==='give_reason'),co=M.find(q=>q.type==='correct'),cm=M.find(q=>q.type==='complete');
+  t('Keys are ignored while typing in inputs',()=>isTyping({tagName:'TEXTAREA'})&&isTyping({tagName:'INPUT'})&&isTyping({tagName:'SELECT'})&&!isTyping({tagName:'DIV'}));
+  t('Plane does not steer while a question is open',()=>{const sS=S,sK=keys;try{S=freshState();S.ph='ask';keys={ArrowLeft:true,w:true};const x=S.px,y=S.py;update(.1);return S.px===x&&S.py===y}finally{S=sS;keys=sK}});
+  t('Every sample model answer passes its own keywords',()=>written.every(q=>grade(q,q.modelAnswer).pass)||'a sample failed');
+  t('Give-reason grading: right passes, vague fails',()=>grade(gr,'Wood floats because its density is less than water').pass&&!grade(gr,'Wood is light').pass);
+  t('Matched keywords are highlighted',()=>/<mark>/.test(grade(gr,'Its density is lower than water').html));
+  t('Correct-the-mistake respects word order',()=>grade(co,'The Earth revolves around the Sun.').pass&&!grade(co,'The Sun revolves around the Earth.').pass);
+  t('Complete-the-sentence accepts a single term',()=>grade(cm,'Photosynthesis').pass&&!grade(cm,'respiration').pass);
+  t('MCQ grading uses the selected option',()=>{const p=prep(mq),a=grade(p,1);return a.pass&&!grade(p,0).pass&&a.text==='B) Carbon dioxide'});
+  t('Too-short written answers are flagged, not graded',()=>grade(gr,'yes').short===true);
+  t('Damage and repair sequence',()=>{const s={wrong:0,pts:0};applyResult(s,false);applyResult(s,false);const two=s.wrong===2,fixed=applyResult(s,true);return two&&fixed===true&&s.wrong===0&&s.pts===100});
+  t('Routing: crash, repair, landing, boost, next',()=>[route(3,false,2,5),route(1,false,5,5),route(0,true,5,5),route(0,true,2,5),route(1,false,2,5)].join()==='crash,repair,landing,boost,next');
+  t('Student link decodes all 5 question types',()=>{const l=makeLink('http://x/','Ana Ö',M,'https://script.google.com/x/exec'),r=parseLink(l.split('?')[1]);return !!r&&r.ok&&!!r.questions&&r.questions.length===M.filter(prep).length&&new Set(r.questions.map(q=>q.type)).size===5&&r.url.endsWith('/exec')&&r.name==='Ana Ö'});
+  t('Tampered link is rejected, student mode kept',()=>{const l=makeLink('http://x/','Ana',M,'').replace('student=Ana','student=Bob'),r=parseLink(l.split('?')[1]);return !!r&&!r.ok&&!r.questions});
+  t('Corrupt question data falls back without crashing',()=>{const n='Ana',c=hash(n).slice(0,4),q='@@@',r=parseLink('student=Ana&code='+c+'&sig='+sign(n,c,q,'')+'&q='+q);return !!r&&r.ok&&r.questions===null});
+  t('Teacher Portal only on the plain master URL',()=>portalAllowed('')&&portalAllowed('?x=1')&&!portalAllowed('?student=Ana&code=1&sig=x')&&!portalAllowed('?code=1'));
+  t('Log payload formats MCQ and typed answers',()=>{const rec=buildRecord('Ana',2,{pts:150,stars:3,time:41.4,res:[{type:'mcq',prompt:'p',answer:'B) Carbon dioxide',model:'Carbon dioxide',result:'pass'},{type:'give_reason',prompt:'q',answer:'Exact typed text, with Capitals!',model:'m',result:'fail'}]},false),d=rec.details;
+    return rec.student==='Ana'&&rec.attempt===2&&rec.score==='150 pts, 3 stars'&&rec.timeSec===41&&d[0].answer==='B) Carbon dioxide'&&d[1].answer==='Exact typed text, with Capitals!'&&d[1].result==='fail'&&/^\d{4}-\d\d-\d\dT/.test(rec.date)&&JSON.parse(JSON.stringify(rec)).details.length===2});
+  t('Replay starts from a clean state',()=>{const a=freshState();a.pts=99;a.wrong=2;a.stars=5;a.time=50;a.res.push(1);a.objs.push(1);a.boost=3;const b=freshState();return b.pts===0&&b.wrong===0&&b.stars===0&&b.time===0&&b.boost===0&&b.res.length===0&&b.objs.length===0&&b.ph==='cruise'&&b.res!==a.res});
+  return T;
+}
+if($('tp')){$('tp').onclick=()=>{$('por').classList.add('on');portal()};$('pc').onclick=()=>$('por').classList.remove('on')}
 </script>
 </body>
 </html>
